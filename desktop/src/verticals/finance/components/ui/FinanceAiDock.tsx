@@ -14,6 +14,7 @@ import { AiComposer, AiMessages } from "../../../../core/ai/AiMessages";
 import { useAiChat } from "../../../../core/ai/useAiChat";
 import { backend } from "@/lib/backend";
 import { useAiRuntime } from "@/hooks/useAiRuntime";
+import { aiUsable } from "@/lib/llmStore";
 import { SaveNoteButton } from "@/components/ui/SaveNoteButton";
 import { QuickAiConnect } from "@/components/ui/QuickAiConnect";
 import { ReportAnswer } from "../ReportAnswer";
@@ -80,7 +81,7 @@ const HOME_SUGGESTIONS = [
 /** 首页里的主对话区：打开产品就能聊，不需要先找侧栏或浮动按钮。 */
 export function FinanceHomeAgent() {
   const runtime = useAiRuntime();
-  const configured = runtime.status === "ok";
+  const configured = aiUsable(runtime.status);
   const chat = useAiChat("home-agent", sendTurn);
   const displayText = usePrivateDisplay();
   const [draft, setDraft] = useState("");
@@ -152,7 +153,7 @@ export function FinanceAiConsole({ open, onClose }: { open: boolean; onClose: ()
     <AiConsole
       open={open}
       onClose={onClose}
-      configured={runtime.status === "ok"}
+      configured={aiUsable(runtime.status)}
       copy={{
         title: "研究助手",
         runtime: "用你接入的 AI",
@@ -174,7 +175,7 @@ export function FinanceAiDock() {
   const displayText = usePrivateDisplay();
   return (
     <AiDock
-      configured={runtime.status === "ok"}
+      configured={aiUsable(runtime.status)}
       copy={{
         trigger: "问 Agent",
         panel: "研究助手",

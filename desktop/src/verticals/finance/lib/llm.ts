@@ -10,15 +10,26 @@
  *    「不进产品配置文件」这条纪律在新做法下照样成立。注意 localStorage 本身会由浏览器落到
  *    本机用户配置中，它不是系统钥匙串，也不承诺加密；这里只承诺不进入产品后端的持久化面。
  *
- * 🔴 浏览器产品只认用户明确保存的这一份配置，不回落到后端环境变量。
+ * 🔴 浏览器产品只认**用户明确选定的**这一份配置，不会随手挑一家顶上。
  *    否则首次使用会在没做选择时悄悄调用另一家模型，界面也无法解释实际走了哪条路。
+ *
+ * ⚠️ 「明确选定」有两条合法的路，都由用户自己做主：
+ *    ① 本机这份（浏览器里填、存本地）—— 它优先；
+ *    ② 服务端那份（后端 `<数据根>/config.json` 的 `provider.profile`，**密钥不进浏览器**）——
+ *       本机没填时才用它。为什么要有②：单人自用的部署里，换手机 / 换浏览器就等于没配过，
+ *       每个端都要重填一次；而这是**一台机器一个人用**的服务。见 `adoptServerAiSource`。
+ *    两条之外的第三种情况只有一种：**谁都没配** —— 那时老实报错，不编默认。
  */
 import { ApiError, backend } from "./backend.ts";
 import { parseHeadlineTranslations, type HeadlineTranslationInput } from "./headlineTranslation.ts";
-import { clearUserLlm, loadUserLlm, readAiRuntime, saveUserLlm, type LlmConfig } from "./llmStore.ts";
+import {
+  aiUsable, clearUserLlm, loadUserLlm, readAiRuntime, readLlmSource, saveUserLlm, setLlmSource, useServerLlm,
+  type LlmConfig,
+} from "./llmStore.ts";
 import { newAnalysisSession } from "./analysisSession.ts";
 
 export type { LlmConfig };
+export { readLlmSource, useServerLlm };
 // ⚠️ 存取一律走 llmStore —— 这里再抄一份实现，迟早两边判定不一致
 export { loadUserLlm };
 
@@ -53,10 +64,36 @@ export function clearLlm(): void {
 }
 
 /**
- * 浏览器端有没有完成一次明确的 AI 接入。
+ * 页面这一端到底能不能用 AI：本机存了那份就用那份，本机没存则看服务端有没有默认来源。
+ * 🔴 判定一律走 `aiUsable`，别在这里或页面里再写一遍 `status === "ok"`（见它上面的注释）。
  */
 export function hasLlm(): boolean {
-  return readAiRuntime().status === "ok";
+  return aiUsable(readAiRuntime().status);
+}
+
+/**
+ * 启动时定一次「这一端用哪份配置」。**必须在挂载 React 之前 await 完**。
+ *
+ * 规则：
+ *   · 用户已经表过态（`vr-llm-source` 有值）或本机已经存了一份 → 什么都不做。
+ *   · 还没表态、本机也没存，而**服务端确实配了默认来源** → 记下 `"server"`。
+ *   · 服务端也没配 → 什么都不做，页面照旧提示「请先接入 AI」（那是准确的）。
+ *
+ * 🔴 为什么要问服务端而不是"没配就报错"：单人自用的部署里，服务端那份就是这台机器的配置，
+ *    各端打开即用才是对的；而**前端从不持有那份配置**，也无从替用户改口径 ——
+ *    它唯一能做的是把「这次该用谁」交给后端（不传 `llm` 字段）。这个函数就是那件事的开关。
+ * ⚠️ 先写标记再渲染，是为了避免首屏先闪一下「未接入 AI」再变回已接入。
+ */
+export async function adoptServerAiSource(): Promise<void> {
+  if (readLlmSource() !== null) return;   // 用户表过态（server / none），不再自动改
+  if (loadUserLlm()) return;              // 本机已经存了一份，它优先
+  let profile: unknown;
+  try {
+    profile = (await backend.product()).provider?.profile;
+  } catch {
+    return;   // 后端连不上：这里不报错，后面读台账那一步会把真正的原因说清楚
+  }
+  if (typeof profile === "string" && profile.trim()) setLlmSource("server");
 }
 
 /** 兼容上游签名：上游的 `loadLlm()` 语义是"当前生效的配置"。 */

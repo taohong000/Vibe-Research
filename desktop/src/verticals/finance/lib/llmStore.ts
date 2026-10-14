@@ -1,7 +1,12 @@
 /**
- * 用户模型配置的**唯一存放处**（当前浏览器配置的 localStorage）。
+ * **「这一端用哪份 AI 配置」的判定处** —— 浏览器里的这一份存这儿（localStorage）。
  * 它会随浏览器配置持久保存在本机磁盘，**不是系统钥匙串，也不承诺加密**；但不会写入
  * 产品仓库、后端配置、日志、事件账本或研究产物。共享电脑上使用后应主动清除。
+ *
+ * 两种来源，**本机那份优先**：
+ *   1. 本机这份（`LLM_KEY`）：用户在「接入 AI」里填的，存在这台设备的浏览器里；
+ *   2. 服务端那份（`LLM_SOURCE_KEY === "server"`）：后端自己的默认来源
+ *      （`<数据根>/config.json` 的 `provider.profile`）。**密钥不进浏览器。**
  *
  * 🔴 单独成一个模块，是为了让**传输层 `backend.chat` 自己**就能读到它 ——
  *    放在 `llm.ts` 里会与 `backend.ts` 形成循环依赖，于是只能由调用方逐个记得传，
@@ -13,6 +18,30 @@
 
 /** 用户自己那一份存在这儿 */
 export const LLM_KEY = "vr-llm";
+
+/**
+ * 「这一端用哪一份配置」的标记。
+ *
+ * 🔴 **为什么需要它**：后端本来就有「不传 `llm` 就用后台默认来源」的通道
+ *    （`<数据根>/config.json` 的 `provider.profile`，见 `runtime_provider.ts` 的
+ *    `llm ?? defaultLlm(...)`）—— 命令行与 MCP 一直走这条。只有页面不肯走，于是
+ *    **每换一台设备、换一个浏览器都要重填一次**。单人自用的部署里，服务端那份才是真相，
+ *    各端应该打开即用。
+ *
+ * 取值语义（**三种要分开**，`null` 与 `"none"` 不是一回事）：
+ *   · `"server"` —— 这一端明确用服务端那份。浏览器里不存任何密钥，`config` 为空是正常状态。
+ *   · `"none"`   —— 用户明确**不要**服务端那份（设置页点过「清除」）。
+ *                   本机也没配时，就老实回到产品的「请先接入 AI」，不要自作主张再采纳一次
+ *                   —— 否则「清除」在下次打开时会自己失效，看起来就是清不掉。
+ *   · 没有这个键 —— 还没表态。启动时按「服务端有没有默认来源」自动定一次
+ *                   （见 `llm.ts` 的 `adoptServerAiSource`），之后就一直按定下来的走。
+ *
+ * ⚠️ 服务端那份的**密钥永远不进浏览器** —— 它只存在于服务端进程的环境变量里。
+ */
+export const LLM_SOURCE_KEY = "vr-llm-source";
+
+/** 这一端选的配置来源 */
+export type LlmSource = "server" | "none";
 
 export interface LlmConfig {
   provider: string;
@@ -69,15 +98,54 @@ function isUsable(c: LlmConfig): boolean {
  *      对话照常有答案，用户完全看不出自己选的模型没生效；
  *    - `unavailable`（隐私模式、存储被策略拒绝）同理，而且每次打开都会重演。
  *    （Codex 审计 r2 P2，核实属实。）
+ *
+ * `server` = 这一端用**服务端自己的**默认来源（见 `LLM_SOURCE_KEY`）。它和 `none` 必须分开：
+ *    `none` 是「谁都没配」，`server` 是「服务端配好了、这一端只是没存密钥」。
+ *    把后者当前者，会让单人自用的部署在每台新设备上都先撞一次“请先接入 AI”。
  */
-export type LlmStatus = "none" | "ok" | "broken" | "unavailable";
+export type LlmStatus = "none" | "ok" | "broken" | "unavailable" | "server";
+
+/**
+ * 这一份状态能不能直接发 AI 请求。
+ *
+ * 🔴 界面上的「已接入」判定一律走它，**不要各写一遍 `status === "ok"`** ——
+ *    漏掉 `server` 的后果是：服务端明明配好了，首页却弹「请接入 AI」、每日复盘点不动，
+ *    而请求本身其实是通的（后端会自己用默认来源）。这种“功能没坏但界面说不通”最难查。
+ */
+export function aiUsable(status: LlmStatus): boolean {
+  return status === "ok" || status === "server";
+}
 
 export interface LlmRead {
   status: LlmStatus;
   config: LlmConfig | null;
 }
 
+/**
+ * 这一端选的来源。读不出来（隐私模式）当"还没表态"，交给上层按"没配"处理 —— 那里本来就会报 unavailable。
+ */
+export function readLlmSource(): LlmSource | null {
+  try {
+    const v = localStorage.getItem(LLM_SOURCE_KEY);
+    return v === "server" || v === "none" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 记下这一端的来源选择。`null` = 清掉选择，回到「还没表态」。 */
+export function setLlmSource(source: LlmSource | null): void {
+  if (source === null) localStorage.removeItem(LLM_SOURCE_KEY);
+  else localStorage.setItem(LLM_SOURCE_KEY, source);
+  const got = localStorage.getItem(LLM_SOURCE_KEY);
+  // 存不下要说出来：静默失败会让用户以为选好了，下次打开又是另一个来源
+  if (got !== source) throw new Error("本地存储没能记下这个选择（浏览器可能不让写）");
+  notifyRuntimeChanged();
+}
+
 export function readAiRuntime(): AiRuntimeRead {
+  // 明确选了服务端那份：本机一个字节都不用存，`config` 为空是**正常**状态而不是"没配"
+  if (readLlmSource() === "server") return { status: "server", config: null };
   let raw: string | null;
   try {
     raw = localStorage.getItem(LLM_KEY);
@@ -116,8 +184,15 @@ export function loadUserLlm(): LlmConfig | null {
   return readUserLlm().config;
 }
 
-/** 存不下时抛错 —— 静默失败会让用户以为配好了，下次打开又是空的 */
+/**
+ * 存本机这一份。存不下时抛错 —— 静默失败会让用户以为配好了，下次打开又是空的。
+ * ⚠️ 会一并清掉来源标记：用户刚明确填了一份，它就得生效，
+ *    留着 `server` 标记会让页面继续无视它（那正是「填了没反应」的经典长相）。
+ */
 export function saveUserLlm(cfg: LlmConfig): void {
+  // 🔴 顺序是要紧的：**先摘标记，再写本机那份**。
+  //    反过来的话，万一写本机失败，标记已经没了、本机又是空的 —— 用户既没存下这份，也回不到服务端那份。
+  setLlmSource(null);
   const serialized = JSON.stringify({ schemaVersion: 2, source: cfg } satisfies AiRuntimeConfig);
   localStorage.setItem(LLM_KEY, serialized);
   if (localStorage.getItem(LLM_KEY) !== serialized) throw new Error("AI 配置未能保存在当前浏览器，请检查存储权限后重试");
@@ -125,14 +200,30 @@ export function saveUserLlm(cfg: LlmConfig): void {
 }
 
 /**
- * 清除。**失败要抛**，并且**回读确认**真的没了。
+ * 清除本机这一份，**并明确不要服务端那份**：之后这一端回到产品的「请先接入 AI」。
+ *
+ * 🔴 为什么不把标记也一并清掉（那样下次启动会重新采纳服务端那份）：
+ *    用户点了「清除」，界面立刻说"已清除"，**下一次打开却又自己接上了** ——
+ *    这看起来就是「清不掉」。写了 `"none"` 才能做到清除前后一致。
+ *
+ * **失败要抛**，并且**回读确认**真的没了。
  * 🔴 吞掉异常的话，界面会说"已清除"，而旧 key 还躺在 localStorage 里、
  *    下一次提问照样被发出去 —— 界面说的和事实相反，这比报错难查得多。
  */
 export function clearUserLlm(): void {
+  setLlmSource("none");
   localStorage.removeItem(LLM_KEY);
   if (localStorage.getItem(LLM_KEY) !== null) throw new Error("本地存储没能删掉这条配置");
   notifyRuntimeChanged();
+}
+
+/**
+ * 改用**服务端自己的**默认来源（`<数据根>/config.json` 的 `provider.profile`）。
+ * 本机这一份会被清掉 —— 两份同时留着，页面按标记走、用户按界面理解，迟早对不上。
+ */
+export function useServerLlm(): void {
+  setLlmSource("server");
+  localStorage.removeItem(LLM_KEY);
 }
 
 export const AI_RUNTIME_CHANGED = "vibe-research:ai-runtime-changed";

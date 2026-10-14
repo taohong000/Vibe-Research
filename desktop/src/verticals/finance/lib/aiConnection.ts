@@ -1,5 +1,5 @@
 import { SUBSCRIPTION_MODELS } from "./ai-models.ts";
-import type { AiRuntimeRead, LlmConfig } from "./llmStore.ts";
+import { aiUsable, type AiRuntimeRead, type LlmConfig } from "./llmStore.ts";
 
 const SOURCE_LABELS: Record<string, string> = {
   "cli-codex": "Codex订阅版", "cli-claude": "Claude订阅", "cli-codebuddy": "WorkBuddy CLI",
@@ -10,7 +10,10 @@ const SOURCE_LABELS: Record<string, string> = {
 
 /** Saved connection identity, not a claim that the remote subscription never expires. */
 export function aiConnectionLabel(runtime: AiRuntimeRead): string {
-  if (runtime.status !== "ok" || !runtime.config) return "未接入AI，请设置";
+  // 用服务端那份（本机没存密钥）：说清楚是**哪一份**在生效 —— 否则用户会以为本机存过配置，
+  // 想换模型时在「接入 AI」里找不到自己填过的东西。
+  if (runtime.status === "server") return "已接入AI：本机服务端配置";
+  if (!aiUsable(runtime.status) || !runtime.config) return "未接入AI，请设置";
   return `已接入AI：${SOURCE_LABELS[runtime.config.source.provider] ?? "自定义 API"}`;
 }
 

@@ -6,6 +6,7 @@ import "./index.css";
 import { router } from "./verticals/finance/router";
 import { hydrateNotes } from "./verticals/finance/lib/notes";
 import { hydrateWatch } from "./verticals/finance/lib/watchlist";
+import { adoptServerAiSource } from "./verticals/finance/lib/llm";
 
 /**
  * **组装根**:唯一一处把垂类接进外壳的地方。
@@ -55,7 +56,13 @@ function fatal(message: string, detail: string) {
   root!.append(box);
 }
 
-Promise.all([hydrateNotes(), hydrateWatch()])
+/**
+ * 🔴 `adoptServerAiSource()` 也在这条链上，而且**必须在渲染之前**：
+ *    它决定「这一端用本机存的那份，还是用服务端自己的默认来源」。晚于首屏完成的话，
+ *    界面会先按「未接入 AI」画一遍（首页弹接入框、每日复盘点不动），再跳回已接入。
+ *    它自己吞掉网络错误，不会把启动拖垮 —— 真连不上后端时，下面读台账那一步会报得比它清楚。
+ */
+Promise.all([hydrateNotes(), hydrateWatch(), adoptServerAiSource()])
   .then(() => {
     createRoot(root).render(
       <StrictMode>

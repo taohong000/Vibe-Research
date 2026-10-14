@@ -6,7 +6,7 @@ import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { backend, friendlyAgentError, type LocalAgentStatus, type ProductInfo } from "@/lib/backend";
 import { API_MODELS, PROVIDER_BASE, SUBSCRIPTION_MODELS, apiPresetForSaved, isCliProvider, modelNameForPreset, providerOfModel, type ProviderId } from "@/lib/ai-models";
-import { clearLlm, loadUserLlm, saveLlm } from "@/lib/llm";
+import { clearLlm, loadUserLlm, saveLlm, useServerLlm } from "@/lib/llm";
 import { LLM_KEY } from "@/lib/llmStore";
 import { testAndSaveAi } from "@/lib/aiConnection";
 import { useAiRuntime } from "@/hooks/useAiRuntime";
@@ -105,8 +105,8 @@ function WorkBuddyLocation({ status, onSave }: { status: LocalAgentStatus | unde
 
 /** 保存 / 清除 / 提示 —— 两档共用，分开写迟早只改一边 */
 function ActionRow(
-  { onSave, configured, onForget, msg, msgErr, busy }:
-  { onSave: () => void | Promise<void>; configured: boolean; onForget: () => void; msg: string; msgErr: string; busy: boolean },
+  { onSave, configured, onForget, msg, msgErr, busy, forgetLabel = "清除" }:
+  { onSave: () => void | Promise<void>; configured: boolean; onForget: () => void; msg: string; msgErr: string; busy: boolean; forgetLabel?: string },
 ) {
   return (
     <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -118,7 +118,7 @@ function ActionRow(
       {configured && (
         <button onClick={onForget}
           className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:text-destructive">
-          <Trash2 className="h-4 w-4" /> 清除
+          <Trash2 className="h-4 w-4" /> {forgetLabel}
         </button>
       )}
       {msg && <span className="text-xs text-primary">{msg}</span>}
@@ -151,6 +151,20 @@ export function Settings() {
   const [testing, setTesting] = useState(false);
   const [rechecking, setRechecking] = useState(false);
   const refreshTail = useRef<Promise<void>>(Promise.resolve());
+
+  /**
+   * 「服务端那份」和「本机那份」是两回事，界面上必须能看出**当前实际在用哪一份**。
+   *
+   *   · 服务端那份：由本机部署写进 `<数据根>/config.json`（见 .local/deploy/lib.sh），
+   *     浏览器里一个字节都不存 —— 所以本机 localStorage 是空的很正常，**不是"没配"**。
+   *   · 本机那份：就在这页的两个表单里填，存在这台设备的浏览器里，优先于服务端那份。
+   *
+   * 🔴 `configured` 只表示"本机存了一份"，**不能拿它当"能不能用 AI"** ——
+   *    用服务端那份时它是 false，照它判定会让页面在已经能用的情况下劝你去接入。
+   */
+  const usingServer = runtime.status === "server";
+  const serverProfile = info?.provider.profile ?? null;
+  const aiReady = configured || usingServer;
 
   const refreshAgents = useCallback((): Promise<void> => {
     // 初次检测、「重新检测」、保存 WorkBuddy 位置全部排进同一条队列；任何旧请求都不能晚回来覆盖新状态。
@@ -252,8 +266,13 @@ export function Settings() {
   const forget = () => {
     // 🔴 清不掉要说出来：吞掉异常的话界面写"已清除"、旧 key 还在，下一次提问照样发出去
     try {
+      // 服务端那份也一并关掉（`clearLlm` 会写下"明确不要"的标记）——
+      // 否则这一端下次打开又自己接上了，用户看到的"清除"就像没生效。
       clearLlm();
-      setApiKey(""); setConfigured(false); say("已清除。再次使用 AI 功能前需要重新连接。");
+      setApiKey(""); setConfigured(false);
+      say(usingServer
+        ? "已关掉：这一端不再使用 AI。想恢复就在上面点「改用本机服务端配置」。"
+        : "已清除。再次使用 AI 功能前需要重新连接。");
     } catch (e) { oops(e instanceof Error ? e.message : String(e)); }
   };
 
@@ -263,9 +282,11 @@ export function Settings() {
     // 🔴 **只放模型的名字，绝不放 key**。这段 context 会随提问发出去 ——
     //    把密钥拼进来等于用户在这一页填的东西被原样送进对话历史。
     context:
-      (configured
-        ? `用户自己配的模型：${mode === "subscription" ? cliId : modelName}（provider ${mode === "subscription" ? providerOfModel(cliId) : providerOfModel(apiId)}）。`
-        : "用户还没连接 AI。") +
+      (usingServer
+        ? "用户这一端用的是本机服务端配置（浏览器里没有存任何配置）。"
+        : configured
+          ? `用户自己配的模型：${mode === "subscription" ? cliId : modelName}（provider ${mode === "subscription" ? providerOfModel(cliId) : providerOfModel(apiId)}）。`
+          : "用户还没连接 AI。") +
       (info
         ? (info.provider.profile
           ? `后台默认 AI 来源：${info.provider.label ?? info.provider.profile}（${info.provider.kind === "local_agent" ? "本机订阅 Agent" : "模型 API"}）` +
@@ -281,9 +302,11 @@ export function Settings() {
     : err
       ? { label: "本地 API 未连接", cls: "border-destructive/25 bg-destructive/[0.08] text-destructive" }
       : { label: "正在检测", cls: "border-border bg-muted/40 text-muted-foreground" };
-  const selectedRuntime = !configured
-    ? "等待连接 AI"
-    : runtimeLabel(runtime.config?.source.provider);
+  const selectedRuntime = usingServer
+    ? "本机服务端配置"
+    : !configured
+      ? "等待连接 AI"
+      : runtimeLabel(runtime.config?.source.provider);
   const selectedProvider = runtime.config?.source.provider ?? "";
   const localSubscriptionRuntime = configured && ["cli-codex", "cli-claude", "cli-codebuddy"].includes(selectedProvider);
   const localRuntimeName = selectedProvider === "cli-codebuddy" ? "WorkBuddy / CodeBuddy" : selectedProvider === "cli-codex" ? "Codex" : "Claude Code";
@@ -308,7 +331,8 @@ export function Settings() {
         subtitle="连接订阅或 API 后就能用：AI 会按问题需要联网搜索、取数和计算，也能跑六阶段研究、多空辩论和回测。"
       />
 
-      {!configured && <GlassCard glow className="mb-5 border-primary/35 bg-primary/[0.06]">
+      {/* 用服务端那份时**不弹**这条横幅：那一端本来就没什么要连的，弹出来只会让人以为坏了 */}
+      {!aiReady && <GlassCard glow className="mb-5 border-primary/35 bg-primary/[0.06]">
         <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-primary">首次使用</p>
         <h2 className="mt-1 text-xl font-extrabold">先连接 AI</h2>
         <p className="mt-1 text-sm text-muted-foreground">有 Codex、Claude Code 或 WorkBuddy / CodeBuddy 就选订阅接入；只有模型 API 就选 API 接入。连接一次，以后直接使用。</p>
@@ -339,6 +363,55 @@ export function Settings() {
           <span className="mt-2 block">AI 联网时，搜索词会发送给搜索服务；网页读取可能经 Jina Reader 转发网址及查询参数。请勿提交含私密令牌或签名凭据的链接。</span>
         </span>
       </div>
+
+      {/* 服务端那份：本机部署已经配好，各端打开即用。
+          放在订阅 / API 两张卡**之前** —— 它是这台机器的默认，其余两张卡是"我要在这一端覆盖它"。 */}
+      {serverProfile && (
+        <GlassCard className="mb-4 border-border/60">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-primary">Server AI</p>
+              <h3 className="mt-1 font-bold">本机服务端配置</h3>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                由<b className="text-foreground">这台机器的部署</b>提供（<span className="font-mono">.local/config.json</span>）。
+                选它之后，浏览器里<b className="text-foreground">不保存任何密钥</b>；换手机、换浏览器打开都不用重填。
+              </p>
+            </div>
+            {usingServer ? (
+              <span className="shrink-0 rounded-lg bg-primary/15 px-3 py-1.5 text-xs font-medium text-primary ring-1 ring-primary/30">当前使用</span>
+            ) : (
+              <button type="button" onClick={() => { try { useServerLlm(); setApiKey(""); setConfigured(false); say("已改用本机服务端配置。"); } catch (e) { oops(e instanceof Error ? e.message : String(e)); } }}
+                className="shrink-0 rounded-lg bg-primary/15 px-4 py-2 text-sm font-medium text-primary ring-1 ring-primary/30 hover:bg-primary/25">
+                改用本机服务端配置
+              </button>
+            )}
+          </div>
+
+          <div className="mt-3">
+            <Row k="来源" v={info?.provider.label ?? serverProfile} />
+            <Row k="类型" v={info?.provider.kind === "local_agent" ? "本机订阅 Agent" : "模型 API（OpenAI 兼容端点）"} />
+            {info?.provider.base_url && <Row k="地址" v={info.provider.base_url} mono />}
+            <Row k="模型" v={String((info?.defaults?.model as string | undefined) ?? "") || "（用模板里的默认模型）"} mono />
+            {info?.provider.kind === "api" && (
+              <Row k="密钥" v={info.provider.key_present
+                ? `已就绪，来自环境变量 ${info.provider.env_key}（只在本机后端进程里，不进浏览器）`
+                : <span className="text-destructive">未就绪：后端读不到环境变量 {info.provider.env_key} —— 用它会报密钥缺失</span>} />
+            )}
+          </div>
+
+          {info?.config_error && (
+            <p className="mt-2 rounded-lg border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-xs text-destructive">
+              后端读这份配置时遇到问题：{info.config_error}
+            </p>
+          )}
+          {usingServer && (
+            <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+              想在<b className="text-foreground">这一端</b>换别的模型？在上面订阅 / API 里填一份保存即可 —— 本机那份优先于服务端。
+              完全不用 AI：点下面订阅 / API 卡片里的「不用 AI」。
+            </p>
+          )}
+        </GlassCard>
+      )}
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2">
         <button type="button" onClick={() => setMode("subscription")} aria-pressed={mode === "subscription"}
@@ -452,7 +525,8 @@ export function Settings() {
                 {rechecking ? "正在重新检测…" : "已在终端装好或登录？重新检测"}
               </button>
             )}
-            <ActionRow onSave={testAndSaveCli} configured={configured} onForget={forget} msg={msg} msgErr={msgErr} busy={testing} />
+            <ActionRow onSave={testAndSaveCli} configured={aiReady} onForget={forget} msg={msg} msgErr={msgErr} busy={testing}
+              forgetLabel={usingServer && !configured ? "不用 AI" : "清除"} />
           </div>
         ) : (
           <div className="space-y-4 text-sm">
@@ -500,7 +574,8 @@ export function Settings() {
                 只建议在可信的个人电脑使用，共享电脑用完请点击“忘记配置”。key 不进入仓库、后端配置、日志或研究产物。
               </p>
             </div>
-            <ActionRow onSave={testAndSaveApi} configured={configured} onForget={forget} msg={msg} msgErr={msgErr} busy={testing} />
+            <ActionRow onSave={testAndSaveApi} configured={aiReady} onForget={forget} msg={msg} msgErr={msgErr} busy={testing}
+              forgetLabel={usingServer && !configured ? "不用 AI" : "清除"} />
           </div>
         )}
       </GlassCard>

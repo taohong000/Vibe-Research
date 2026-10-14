@@ -11,7 +11,7 @@
  *    底座 token 浏览器永远拿不到;模型 key 是**用户自己的**,存在他自己的 localStorage 里,
  *    随请求发给本机后端、用完即弃(见 llmStore.ts 与「接入 AI」页)。
  */
-import { readAiRuntime, type ExecutionMode, type LlmConfig } from "./llmStore.ts";
+import { aiUsable, readAiRuntime, type ExecutionMode, type LlmConfig } from "./llmStore.ts";
 import type { ImportResult } from "./importPositions.ts";
 import type { NotifyOverview } from "./notify.ts";
 import type { CalendarResult } from "./calendar.ts";
@@ -59,7 +59,9 @@ const SAFE_AGENT_MESSAGE_CODES = new Set([
   "bad_agent_state", "not_found", "tool_failed", "debate_source_changed", "debate_exists", "debate_busy",
   "invalid_task_request", "invalid_task", "invalid_material_resolution", "material_resolution_failed",
   "operation_not_available", "quick_not_eligible", "quick_provider_unsupported", "route_changed", "cancelled",
-  "ai_not_configured", "agent_required", "agent_runtime_unsupported", "direct_provider_unsupported", "bad_execution_mode",
+  // ai_source_not_configured = 请求里没带 llm、服务端也没有后台默认来源。与 ai_not_configured 同一件事，
+  // 只是判定发生在后端（页面选了「用服务端配置」但服务端其实没配时走这条），文案是后端写的、指向怎么补救。
+  "ai_not_configured", "ai_source_not_configured", "agent_required", "agent_runtime_unsupported", "direct_provider_unsupported", "bad_execution_mode",
   "network_error", "http_error", "redirect", "bad_json", "upstream_error", "empty_choice",
   // 模型 API 拒绝 key / 限流 / 拒绝请求 / 地址跳转:文案是后端 publicApiFailure 写死的,不含上游原文
   "api_key_rejected", "api_rate_limited", "api_request_rejected", "api_redirect",
@@ -198,6 +200,17 @@ function requestRuntime(llm?: unknown): { llm: unknown; executionMode: Execution
   if (r.status === "unavailable") {
     throw new ApiError("浏览器不让读本地存储（隐私模式？）—— 「接入 AI」的配置这一轮用不了", 400, "llm_unavailable");
   }
+  /**
+   * 用**服务端那份**：**不传 `llm` 字段**，让后端用它自己的默认来源
+   * （`<数据根>/config.json` 的 `provider.profile`，见 `runtime_provider.ts` 的 `llm ?? defaultLlm(...)`）。
+   *
+   * 🔴 这里只做一件事 —— 把决定权交出去。**不要**顺手在前端挑一家产品模板顶上：
+   *    那才是真的在用户不知情时替他选大脑（账单与产出都跟着变，界面还看不出来）。
+   *    交出去之后，服务端配了就用它，没配后端会回 `ai_source_not_configured`，措辞比这里现编的更准确。
+   * ⚠️ `JSON.stringify` 会丢掉值为 `undefined` 的键，于是请求体里根本没有 `llm` ——
+   *    后端 `api.ts` 正是按 `b.llm !== undefined` 判的，两边口径一致。
+   */
+  if (r.status === "server") return { llm: undefined, executionMode: "agent" };
   if (r.status === "none" || !r.config) {
     throw new ApiError("请先到「接入 AI」选择订阅或 API，连接成功后再使用 AI 功能", 409, "ai_not_configured");
   }
@@ -473,8 +486,10 @@ export const backend = {
   runTool: async <T>(name: string, body: unknown, signal?: AbortSignal) => {
     // 没选好 AI（没配、本机配置读不懂、浏览器不让读存储）时按不调用 AI 的方式发：K 线、计算、体检这类确定性工具照常跑，
     // 要不要 AI 由服务端工具契约校验（Codex 审计 2026-10-09 C9：原来配置坏了连 K 线都打不开）。
+    // ⚠️ 判定要用 `aiUsable`：`server`（用服务端那份）是**有 AI**，别把它一起划进 direct，
+    //    否则服务端配好之后，"问 Agent" 这类要 AI 的工具会一律被自己拦成「请先接入 AI」。
     const ai = readAiRuntime().status;
-    const direct = ai === "none" || ai === "broken" || ai === "unavailable";
+    const direct = !aiUsable(ai);
     const runtime = direct ? { executionMode: "direct" as const, llm: undefined } : requestRuntime();
     try {
       return await call<T>(`/tool/${encodeURIComponent(name)}`, {
