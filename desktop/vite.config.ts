@@ -5,7 +5,7 @@ import path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type ProxyOptions } from "vite";
 import { apiTokenPath } from "./vite-token";
-import { remoteAccessMiddlewares } from "./remote-access";
+import { createRemoteOriginGuard, remoteAccessMiddlewares } from "./remote-access";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -14,7 +14,14 @@ const lan = process.env.VRA_LAN === "1";
 // 远程访问模式(scripts/start --remote，给云端 Agent 部署后发链接给使用者)：先打包，再由 vite preview 对外，
 // 每个请求都要过访问口令(见 remote-access.ts)。不把开发服务器直接暴露到公网。
 const remote = process.env.VRA_REMOTE === "1";
-const remoteGate = remote ? remoteAccessMiddlewares(process.env.VRA_ACCESS_TOKEN, { publicUrl: process.env.VRA_PUBLIC_URL || null }) : [];
+// 反向代理模式(VRA_BEHIND_PROXY=1，需与 --remote 同时用)：页面只在回环监听，公网入口由外层代理负责身份校验
+// (例如 Cloudflare Tunnel + Access 的邮箱验证码)。与远程模式的差别只有两点：不绑 0.0.0.0、不装访问口令门。
+// 打包好的 preview、放行任意 Host、/api 的 Origin 归一化都保持不变 —— 少任何一条，经代理的公网访问都会 403。
+// 默认关闭；不设这个变量时行为与改动前完全一致。
+const behindProxy = remote && process.env.VRA_BEHIND_PROXY === "1";
+const remoteGate = !remote ? []
+  : behindProxy ? [createRemoteOriginGuard()]   // 认证交给外层代理，但仍拦跨站写请求
+    : remoteAccessMiddlewares(process.env.VRA_ACCESS_TOKEN, { publicUrl: process.env.VRA_PUBLIC_URL || null });
 
 /** 启动器选好的端口经环境变量传进来（见 orchestrator/src/startup_ports.ts）；没给就用默认 5930 / 8765 */
 function envPort(name: string, fallback: number): number {
@@ -116,7 +123,8 @@ export default defineConfig({
   },
   // 远程访问模式(startup.ts 先 vite build 再 vite preview)和打包好的页面(--prebuilt / 免安装包)用。
   preview: {
-    host: remote ? "0.0.0.0" : "127.0.0.1",
+    // 反向代理模式只绑回环：外层(cloudflared)从本机回源，绑回环照样通公网，同时不给局域网留口子。
+    host: remote && !behindProxy ? "0.0.0.0" : "127.0.0.1",
     port: uiPort,
     strictPort: true,
     // 云平台分配的公网域名事先不知道；放行任意 Host，靠上面的访问口令把门(没口令连页面都拿不到)。
