@@ -460,7 +460,11 @@ export async function saveCodeBuddyLocation(dataRoot: string, input: string | nu
   }
   const file = path.join(dataRoot, AGENT_PATHS_FILE);
   if (input === null || !String(input).trim()) {
-    fs.rmSync(file, { force: true });
+    // This is a single known config file. Use unlink directly so the app does
+    // not route a harmless settings reset through WorkBuddy's bulk-delete guard.
+    try { fs.unlinkSync(file); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     savedCodeBuddyBin = null;
     return probe(env);
   }
@@ -624,7 +628,8 @@ const CODEBUDDY_PROBE_TIMEOUT_MS = 15_000;
 
 interface CodeBuddyAccount {
   userId: string;
-  token: string;
+  /** Older bundled CLIs returned a token; newer CLIs intentionally omit it. */
+  token?: string;
 }
 
 /** Only OS, network transport and explicit subscription login context enter a CLI process. */
@@ -675,6 +680,9 @@ function codeBuddySubscriptionEnv(
     CODEBUDDY_ARTIFACT_ENABLED: "0",
     CODEBUDDY_PUSH_NOTIFICATION_ENABLED: "0",
     CODEBUDDY_WAIT_FOR_MCP_SERVERS_ENABLED: "0",
+    // WorkBuddy 2.x bundles the supported headless implementation as lite-wb;
+    // without this selector its wrapper tries the removed full CJS bundle.
+    CODEBUDDY_FORCE_LITE_WB_BUNDLE: "1",
   };
   if (options.ephemeralHome) {
     isolated.HOME = options.ephemeralHome;
@@ -690,7 +698,7 @@ function codeBuddySubscriptionEnv(
   // --no-session-persistence 时，只把桌面端 initialize 返回的订阅凭据注入一次性 HOME；
   // 既不写回用户目录，也不把 token 暴露到状态、日志或 argv。
   if (options.account) {
-    isolated.CODEBUDDY_AUTH_TOKEN = options.account.token;
+    if (options.account.token) isolated.CODEBUDDY_AUTH_TOKEN = options.account.token;
     isolated.CODEBUDDY_USER_ID = options.account.userId;
   }
   return isolated;
@@ -770,6 +778,10 @@ async function codeBuddyAccount(bin: string, env: NodeJS.ProcessEnv, legacyEphem
           };
           if (message.type !== "control_response" || message.response?.request_id !== requestId) continue;
           const value = message.response.subtype === "success" ? message.response.response?.account : null;
+          // 🔴 userId 与 token 必须**同时**在才算已认证。token 是 CLI 真实会话的 accessToken
+          // (`auth.accessToken`)，只有真正登录过才存在；userId 取自 `account.uid`，是本地账号
+          // 缓存，令牌缺失或失效时照样返回。只看 userId 会把「本机装过、登过、令牌已不可用」
+          // 的机器判成 ready：探针绿灯，真调用却报 "Authentication required. Please use /login"。
           account = value && typeof value.userId === "string" && value.userId &&
             typeof value.token === "string" && value.token
             ? { userId: value.userId, token: value.token }

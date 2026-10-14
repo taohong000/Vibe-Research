@@ -15,7 +15,7 @@ const OPTIONS = [
 const LOGIN_HINT: Record<string, string> = {
   "cli-codex": "本机的 Codex CLI 还没有用 ChatGPT 账号登录。请在终端运行 codex login，完成后再点一次。",
   "cli-claude": "本机的 Claude Code 还没有登录。请在终端运行 claude 完成登录，然后再点一次。",
-  "cli-codebuddy": "没有可用的 WorkBuddy / CodeBuddy 登录。请打开 WorkBuddy 完成登录（独立 CLI 用户运行 codebuddy 登录），然后再点一次。",
+  "cli-codebuddy": "本机这个 CodeBuddy CLI 还没有可用登录。请在终端运行 codebuddy 完成 /login 后再点一次；WorkBuddy 桌面版已登录不等于它也登录了，桌面端不会把自己的登录提供给外部程序。",
 };
 
 export function QuickAiConnect({ onDismiss, storageStatus }: { onDismiss: () => void; storageStatus: string }) {

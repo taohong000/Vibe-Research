@@ -432,7 +432,7 @@ export function Settings() {
               const codebuddy = agentOf("cli-codebuddy");
               if (codebuddy?.status === "ready") return null;
               const help = codebuddy?.status === "not_authenticated"
-                ? <>已检测到 CodeBuddy，但没有可用登录态：WorkBuddy 用户请打开应用完成登录；独立 CLI 用户请运行 <span className="font-mono">codebuddy</span> 登录。</>
+                ? <>已检测到 CodeBuddy，但没有可用登录态：请在终端运行 <span className="font-mono">codebuddy</span> 并完成 <span className="font-mono">/login</span>。WorkBuddy 桌面版已登录不等于它也登录了 —— 桌面端不会把自己的登录提供给外部程序。</>
                 : codebuddy?.status === "not_installed"
                   ? <>尚未检测到 WorkBuddy 或 CodeBuddy Code：安装并登录 WorkBuddy 桌面版即可；也可运行 <span className="font-mono">npm install -g @tencent-ai/codebuddy-code</span> 安装腾讯官方 CLI。</>
                   : codebuddy?.status === "probe_failed"

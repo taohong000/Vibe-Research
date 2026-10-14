@@ -125,7 +125,7 @@ let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',x=>input+
   if(a.includes('--input-format=stream-json')){
     if(process.env.FAKE_COLD_AUTH==='1') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,5500);
     const req=JSON.parse(input.trim());
-    const account=process.env.FAKE_NOT_LOGGED==='1'?null:{userId:'secret-user',token:'secret-token',userName:'hidden@example.com'};
+    const account=process.env.FAKE_NOT_LOGGED==='1'?null:(process.env.FAKE_NO_TOKEN==='1'?{userId:'secret-user',userName:'hidden@example.com'}:{userId:'secret-user',token:'secret-token',userName:'hidden@example.com'});
     console.log(JSON.stringify({type:'control_response',response:{subtype:'success',request_id:req.request_id,response:{account}}}));
     return;
   }
@@ -788,6 +788,11 @@ test("CodeBuddy 官方控制探针只返回版本与登录布尔，不泄露账�
 
     const loggedOut = await probeCodeBuddy({ ...PLATFORM_ENV, CODEBUDDY_BIN: f.bin, PATH: "", FAKE_NOT_LOGGED: "1" });
     assert.equal(loggedOut.status, "not_authenticated");
+    // 有 userId、没 token：本地账号缓存还在但令牌已不可用。initialize 照样会回一个 account
+    // 字段，只认 userId 就会报 ready —— 探针绿灯、真调用却报 Authentication required。
+    const staleToken = await probeCodeBuddy({ ...PLATFORM_ENV, CODEBUDDY_BIN: f.bin, PATH: "", FAKE_NO_TOKEN: "1" });
+    assert.equal(staleToken.status, "not_authenticated");
+    assert.equal(staleToken.available, false);
     const old = await probeCodeBuddy({ ...PLATFORM_ENV, CODEBUDDY_BIN: f.bin, PATH: "", FAKE_OLD_HELP: "1" });
     assert.equal(old.status, "probe_failed");
   } finally { fs.rmSync(f.dir, { recursive: true, force: true }); }
